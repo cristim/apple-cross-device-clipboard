@@ -18,7 +18,8 @@
 //!
 //! IMPORTANT: this path is derived from the spec for a sub-96-bit IV; it still
 //! needs validation against a real captured packet from your own devices (see
-//! README, "Validation"). The unit tests below only check internal consistency.
+//! README, "Validation"). The unit tests below pin the GCM construction to an
+//! independent implementation, not to Apple's framing.
 
 use aes::cipher::generic_array::GenericArray;
 use aes::cipher::{BlockEncrypt, KeyInit};
@@ -196,7 +197,7 @@ pub fn open_truncated(
 /// where `tag` is `tag_len` bytes (1 for a Handoff advert).
 ///
 /// Like the open path, this is spec-derived and UNVALIDATED against real Apple
-/// traffic; a seal/open round-trip is the only guarantee so far.
+/// traffic; it is checked only against an independent GCM implementation.
 pub fn seal_truncated(
     key: &[u8],
     iv: &[u8],
@@ -319,6 +320,46 @@ mod tests {
             let key: Vec<u8> = (0..len as u8).collect();
             let out = AesCipher::new(&key).unwrap().encrypt_block(&plaintext);
             assert_eq!(hex::encode(out), expected, "key length {len}");
+        }
+    }
+
+    /// Whole-GCM known answers for the 2-byte IV, 1-byte AAD and 10-byte
+    /// payload shape, one per key length. Expected values come from an
+    /// independent implementation (PyCryptodome `AES.MODE_GCM` with a 2-byte
+    /// nonce), so J0, GHASH, CTR and the tag are pinned to an external
+    /// reference and not only to a seal/open round-trip.
+    #[test]
+    fn gcm_short_iv_known_answers() {
+        let iv = [0x13u8, 0x37];
+        let aad = [0x08u8];
+        let plaintext = b"clipboard!";
+        for (len, ct_hex, tag_hex) in [
+            (
+                16usize,
+                "6b65dc989f527c6a32ff",
+                "b8040c394e628aff2c2af656daca2b02",
+            ),
+            (
+                24,
+                "7fececf8584770360bd2",
+                "1d6571935dc6d955a0466365d007c02d",
+            ),
+            (
+                32,
+                "49422145a746e8324ae6",
+                "b46ae9e3e05f9bc6d46684ad8b7c7fbe",
+            ),
+        ] {
+            let key: Vec<u8> = (0..len as u8).collect();
+            let (ct, tag) = seal_truncated(&key, &iv, &aad, plaintext, 16).expect("seal");
+            assert_eq!(hex::encode(&ct), ct_hex, "ciphertext, key length {len}");
+            assert_eq!(hex::encode(&tag), tag_hex, "tag, key length {len}");
+
+            let tag = hex::decode(tag_hex).unwrap();
+            let out = open_truncated(&key, &iv, &aad, &ct, &tag[..1])
+                .expect("valid key")
+                .expect("1-byte tag verifies");
+            assert_eq!(out, plaintext, "key length {len}");
         }
     }
 

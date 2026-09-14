@@ -80,19 +80,34 @@ mod tests {
 
     #[test]
     fn build_parses_and_decrypts_back() {
-        let key = vec![0x5Au8; 16];
-        let mut b = HandoffAdvertBuilder::new(key.clone());
-        let hash = [1, 2, 3, 4, 5, 6, 7];
-        let tlv = b.build(hash, FLAG_CLIPBOARD_AVAILABLE).expect("build");
+        // 16-, 24- and 32-byte keys (macOS 26.1 exports 32-byte keys).
+        for len in [16usize, 24, 32] {
+            let key = vec![0x5Au8; len];
+            let mut b = HandoffAdvertBuilder::new(key.clone());
+            let hash = [1, 2, 3, 4, 5, 6, 7];
+            let tlv = b.build(hash, FLAG_CLIPBOARD_AVAILABLE).expect("build");
 
-        // Our own receive-path parser must accept it...
-        let ble = HandoffBle::parse(&tlv).expect("parse");
-        // ...and the truncated tag must verify, yielding the payload we put in.
-        let plain = gcm::open_truncated(&key, &ble.counter_iv, &[ble.status], &ble.ciphertext, &ble.tag)
+            // Our own receive-path parser must accept it...
+            let ble = HandoffBle::parse(&tlv).expect("parse");
+            // ...and the truncated tag must verify, yielding the payload we put in.
+            let plain = gcm::open_truncated(
+                &key,
+                &ble.counter_iv,
+                &[ble.status],
+                &ble.ciphertext,
+                &ble.tag,
+            )
             .expect("valid key")
             .expect("decrypt");
-        assert_eq!(&plain[1..8], &hash);
-        assert!(HandoffFlags::from_byte(plain[8]).clipboard_available());
+            assert_eq!(&plain[1..8], &hash, "key length {len}");
+            assert!(HandoffFlags::from_byte(plain[8]).clipboard_available());
+        }
+    }
+
+    #[test]
+    fn build_rejects_unsupported_key_length() {
+        let mut b = HandoffAdvertBuilder::new(vec![0u8; 20]);
+        assert_eq!(b.build([0; 7], 0), Err(gcm::GcmError::InvalidKeyLength(20)));
     }
 
     #[test]
